@@ -118,7 +118,7 @@ session_write_close();
 
 require_once __DIR__ . '/../nonce_helper.php';
 $nonce     = generate_nonce();
-emit_csp($nonce, "'self'");
+emit_csp($nonce, "'self' https://project.activetk.jp");
 $guestName = htmlspecialchars($target['name'] ?? '', ENT_QUOTES, 'UTF-8');
 $guestIdH  = htmlspecialchars($guestId, ENT_QUOTES, 'UTF-8');
 ?>
