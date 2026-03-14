@@ -92,6 +92,7 @@ $isApi = (
     isset($_GET['check']) || isset($_GET['logout']) || isset($_GET['challenge'])
     || isset($_GET['change_pwd']) || isset($_GET['change_pwd_challenge'])
     || isset($_GET['pow_challenge']) || isset($_GET['pow_verify'])
+    || isset($_GET['endpoint'])
     || $isPost
 );
 if (!$isApi) { http_response_code(204); exit; }
@@ -102,6 +103,28 @@ header('X-Frame-Options: DENY');
 header('Referrer-Policy: no-referrer');
 header('Cache-Control: no-store');
 header('Cross-Origin-Resource-Policy: same-origin');
+
+// GET: endpoint 情報（archive.today判定用、旧 external endpoint 相当）
+if (isset($_GET['endpoint'])) {
+    if (!$isGet) json_abort(405, 'METHOD_NOT_ALLOWED');
+
+    $host = $_SERVER['HTTP_HOST'] ?? '';
+    $acceptLang = $_SERVER['HTTP_ACCEPT_LANGUAGE'] ?? '';
+    $acceptEnc  = $_SERVER['HTTP_ACCEPT_ENCODING'] ?? '';
+    $uaCh       = $_SERVER['HTTP_SEC_CH_UA'] ?? '';
+
+    echo json_encode([
+        'PublicIP'            => get_client_ip(),
+        'Host'                => $host,
+        'RealIP'              => get_client_ip(),
+        'UserAgent'           => $_SERVER['HTTP_USER_AGENT'] ?? '',
+        'AcceptLang'          => $acceptLang,
+        'AcceptEncode'        => $acceptEnc,
+        'IsItTor'             => false,
+        'UserAgentClientHints'=> $uaCh,
+    ]);
+    exit;
+}
 
 // ─── 定数 ─────────────────────────────────────────────────────────────────────
 define('USERS_FILE',       '/var/www/private/users.json');

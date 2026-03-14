@@ -6,7 +6,7 @@ window.endpointjs = function (...callbacks) {
   const info = { Browser: {}, Headers: {} };
   info.UserAgent = navigator.userAgent;
 
-  fetch('https://project.activetk.jp/endpoint/', { credentials: 'omit', cache: 'no-store' })
+  fetch('action.php?endpoint=1', { credentials: 'same-origin', cache: 'no-store' })
     .then((res) => res.json())
     .then((data) => {
       info.PublicIP = data.PublicIP;
