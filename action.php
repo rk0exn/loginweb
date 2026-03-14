@@ -130,6 +130,17 @@ define('FB_HASH',    strtolower((string)getenv('LOGINWEB_FALLBACK_HASH_SHA512'))
 define('FB_WM_KEY',  (string)getenv('LOGINWEB_FALLBACK_WEBMASTER_KEY'));
 define('FB_USER_ID', (string)getenv('LOGINWEB_FALLBACK_USER_ID'));
 
+function is_fallback_enabled(): bool {
+    return getenv('LOGINWEB_FALLBACK_ENABLED') === '1';
+}
+
+function fallback_ip_allowed(string $ip): bool {
+    $allow = trim((string)getenv('LOGINWEB_ADMIN_ALLOWLIST_IPS'));
+    if ($allow === '') return true; // 未設定時はIP制限なし（互換維持）
+    $allowedIps = array_filter(array_map('trim', explode(',', $allow)), static fn($v) => $v !== '');
+    return in_array($ip, $allowedIps, true);
+}
+
 require_once __DIR__ . '/guest_helper.php';
 
 // ─── ユーティリティ ───────────────────────────────────────────────────────────
@@ -448,12 +459,19 @@ function verify_session_integrity(): bool {
 
 // ─── 認証ロジック ─────────────────────────────────────────────────────────────
 function check_fallback(string $username, string $pwdhash): bool {
+    if (!is_fallback_enabled()) {
+        return false;
+    }
     // いずれか未設定ならフォールバック認証を完全無効化
     if (FB_USER === '' || FB_HASH === '' || FB_WM_KEY === '' || FB_USER_ID === '') {
         return false;
     }
     if (!preg_match('/^[0-9a-f]{128}$/', FB_HASH)) {
         error_log('FALLBACK_DISABLED_INVALID_HASH_FORMAT');
+        return false;
+    }
+    if (!fallback_ip_allowed(get_client_ip())) {
+        error_log('FALLBACK_DENIED_IP ip=' . get_client_ip());
         return false;
     }
 
@@ -869,6 +887,7 @@ $_SESSION['authenticated'] = true;
 $_SESSION['username']      = $username;
 $_SESSION['is_fallback']   = $isFallback;
 $_SESSION['login_at']      = time();
+$_SESSION['last_activity'] = time();
 $_SESSION['_ip']           = get_client_ip();
 $_SESSION['_ua']           = ua_fingerprint();
 if (!$isFallback && $userRecord !== null) {

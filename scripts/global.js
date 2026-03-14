@@ -276,8 +276,6 @@ if (page === 'login') {
     setMsg('認証中\u2026');
 
     const extraFields = {};
-    if (params.has('is_webmaster')) extraFields['is_webmaster'] = params.get('is_webmaster');
-    if (params.has('user_id'))      extraFields['user_id']      = params.get('user_id');
 
     try {
       progEl.style.width = '30%';
