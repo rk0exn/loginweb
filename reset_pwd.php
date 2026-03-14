@@ -20,7 +20,7 @@ function load_json(string $path): array {
     return is_array($d) ? $d : [];
 }
 
-function save_json(string $path, array $data): bool {
+function save_json_object(string $path, array $data): bool {
     $fp = @fopen($path, 'c+');
     if ($fp === false) { error_log('SAVE_FAIL: ' . $path); return false; }
     if (!flock($fp, LOCK_EX)) { fclose($fp); return false; }
@@ -35,6 +35,21 @@ function save_json(string $path, array $data): bool {
     flock($fp, LOCK_UN);
     fclose($fp);
     if (!$ok) error_log('SAVE_FAIL: ' . $path);
+    return $ok;
+}
+
+function save_resets_list(array $resets): bool {
+    $fp = @fopen(RESETS_FILE, 'c+');
+    if ($fp === false) { error_log('SAVE_FAIL: ' . RESETS_FILE); return false; }
+    if (!flock($fp, LOCK_EX)) { fclose($fp); return false; }
+    ftruncate($fp, 0);
+    rewind($fp);
+    $encoded = json_encode(array_values($resets), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+    $ok = (fwrite($fp, $encoded) !== false);
+    fflush($fp);
+    flock($fp, LOCK_UN);
+    fclose($fp);
+    if (!$ok) error_log('SAVE_FAIL: ' . RESETS_FILE);
     return $ok;
 }
 
@@ -55,7 +70,7 @@ function validate_token(string $token): ?array {
 function consume_token(string $token): void {
     $resets = load_json(RESETS_FILE);
     $resets = array_values(array_filter($resets, fn($r) => !hash_equals($r['token'] ?? '', $token)));
-    save_json(RESETS_FILE, $resets);
+    save_resets_list($resets);
 }
 
 session_name('AUTHSID');
@@ -143,7 +158,7 @@ if ($entry === null) {
                     if (!$saved) {
                         $error = 'ユーザーが見つかりません。管理者に連絡してください。';
                         $step  = 'set';
-                    } elseif (!save_json(USERS_FILE, ['data' => array_values($users)])) {
+                    } elseif (!save_json_object(USERS_FILE, ['data' => array_values($users)])) {
                         $error = '保存に失敗しました。管理者に連絡してください。';
                         $step  = 'set';
                     } else {
@@ -190,8 +205,6 @@ $verifiedUser = htmlspecialchars(
 <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, max-image-preview:none, max-video-preview:0, noimageindex, unavailable-after:Thu, 24 Nov 2022 00:00:00 +0900">
 <title>パスワードリセット</title>
 <link rel="stylesheet" href="styles/global.css" nonce="<?= $nonce ?>">
-<script src="https://code.activetk.jp/archive-today.blocker.js" nonce="<?= $nonce ?>" defer></script>
-<script nonce="<?= $nonce ?>">var _0x1e85d5=_0xac99;window.cp='cmswZXhuLnRhdHN1dC5qcA==',window.cpe='JUUzJTgxJTkzJUUzJTgxJUFFJUUzJTgyJUI1JUUzJTgyJUE0JUUzJTgzJTg4JUUzJTgxJUFGJUU2JTlDJUFDJUU2JTlEJUE1JUUzJTgxJUFFJUU2JTgzJUIzJUU1JUFFJTlBJUUzJTgxJUE4JUUzJTgxJUFGJUU5JTgxJTk1JUUzJTgxJTg2JUUzJTgxJUE3JUU0JUJEJUJGJUU3JTk0JUE4JUUzJTgxJTk1JUUzJTgyJThDJUUzJTgxJUE2JUUzJTgxJTg0JUUzJTgyJThCJUU1JThGJUFGJUU4JTgzJUJEJUU2JTgwJUE3JUUzJTgxJThDJUUzJTgxJTgyJUUzJTgyJThBJUUzJTgxJUJFJUUzJTgxJTk5JUUzJTgwJTgyJTNDYnIlM0UlRTYlOUMlQUMlRTYlOUQlQTUlRTMlODElQUUlRTMlODIlQjUlRTMlODIlQTQlRTMlODMlODglRTMlODElQUUlRTclQUUlQTElRTclOTAlODYlRTglODAlODUlRTMlODElQUIlRTklODAlQTMlRTclQjUlQTElRTMlODElOTclRTMlODElQTYlRTMlODElOEYlRTMlODElQTAlRTMlODElOTUlRTMlODElODQlRTMlODAlODIlM0NiciUzRSVFNiU5QyVBQyVFNiU5RCVBNSVFMyU4MSVBRSVFMyU4MiVCNSVFMyU4MiVBNCVFMyU4MyU4OCVFRiVCQyU5QWh0dHBzJTNBJTJGJTJGcmswZXhuLnRhdHN1dC5qcA==';function _0xac99(_0x3aecaa,_0x2e640e){var _0x40b52b=_0x40b5();return _0xac99=function(_0x15110b,_0x389c09){_0x15110b=_0x15110b-0xdb;var _0x3d0fc0=_0x40b52b[_0x15110b];return _0x3d0fc0;},_0xac99(_0x3aecaa,_0x2e640e);}(function(_0x28fef4,_0x507f58){var _0x4ba24d=_0xac99,_0x51bc4d=_0x28fef4();while(!![]){try{var _0x27b60a=-parseInt(_0x4ba24d(0xdf))/0x1*(parseInt(_0x4ba24d(0xdc))/0x2)+parseInt(_0x4ba24d(0xde))/0x3*(-parseInt(_0x4ba24d(0xe1))/0x4)+parseInt(_0x4ba24d(0xdd))/0x5*(-parseInt(_0x4ba24d(0xe2))/0x6)+parseInt(_0x4ba24d(0xe6))/0x7*(-parseInt(_0x4ba24d(0xe0))/0x8)+-parseInt(_0x4ba24d(0xe8))/0x9*(-parseInt(_0x4ba24d(0xea))/0xa)+-parseInt(_0x4ba24d(0xe4))/0xb*(parseInt(_0x4ba24d(0xe9))/0xc)+parseInt(_0x4ba24d(0xe3))/0xd;if(_0x27b60a===_0x507f58)break;else _0x51bc4d['push'](_0x51bc4d['shift']());}catch(_0x5ebc95){_0x51bc4d['push'](_0x51bc4d['shift']());}}}(_0x40b5,0x60f9d),document[_0x1e85d5(0xe5)](_0x1e85d5(0xdb),function(){var _0x3bc523=_0x1e85d5;decodeURIComponent(btoa(window['location'][_0x3bc523(0xeb)]))!=window['cp']&&document[_0x3bc523(0xe7)](decodeURIComponent(atob(window['cpe'])));}));function _0x40b5(){var _0x4b1445=['92540KSvSPW','host','DOMContentLoaded','6sYMyTb','5UgfKcP','3zOvJRz','169577bwQSBJ','8zOBdPB','2044716LSbUIz','1277808NtISmv','24526827gLoDvd','11KPkjdL','addEventListener','2096507BFeUPV','write','360GzcSBX','3926964FAHSEF'];_0x40b5=function(){return _0x4b1445;};return _0x40b5();}</script>
 </head>
 <body data-page="reset">
 <div class="panel">

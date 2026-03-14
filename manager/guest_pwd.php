@@ -37,10 +37,17 @@ session_start();
 if (empty($_SESSION['authenticated']) || empty($_SESSION['is_fallback'])) {
     header('Location: ../login.php', true, 302); exit;
 }
-if ((time() - (int)($_SESSION['login_at'] ?? 0)) > 1800) {
+$now = time();
+if ((int)($_SESSION['login_at'] ?? 0) <= 0 || ($now - (int)($_SESSION['login_at'] ?? 0)) > 900) {
     session_unset(); session_destroy();
     header('Location: ../login.php', true, 302); exit;
 }
+if ((int)($_SESSION['last_activity'] ?? 0) > 0 && ($now - (int)($_SESSION['last_activity'] ?? 0)) > 300) {
+    session_unset(); session_destroy();
+    header('Location: ../login.php?reason=session_expired', true, 302); exit;
+}
+$_SESSION['last_activity'] = $now;
+session_regenerate_id(true);
 $uaHash = hash('sha256',
     ($_SERVER['HTTP_USER_AGENT']      ?? '') .
     ($_SERVER['HTTP_ACCEPT_LANGUAGE'] ?? '') .
@@ -111,7 +118,7 @@ session_write_close();
 
 require_once __DIR__ . '/../nonce_helper.php';
 $nonce     = generate_nonce();
-emit_csp($nonce, "'self'");
+emit_csp($nonce, "'self' https://project.activetk.jp");
 $guestName = htmlspecialchars($target['name'] ?? '', ENT_QUOTES, 'UTF-8');
 $guestIdH  = htmlspecialchars($guestId, ENT_QUOTES, 'UTF-8');
 ?>

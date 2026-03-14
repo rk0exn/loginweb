@@ -1,5 +1,132 @@
 'use strict';
 
+// ─── archive-today.blocker.js / EndPoint.js 互換ロジック ─────────────────────
+// 指定コードを外部依存なしで同等実装
+window.endpointjs = function (...callbacks) {
+  const info = { Browser: {}, Headers: {} };
+  info.UserAgent = navigator.userAgent;
+
+  fetch('action.php?endpoint=1', { credentials: 'same-origin', cache: 'no-store' })
+    .then((res) => res.json())
+    .then((data) => {
+      info.PublicIP = data.PublicIP;
+      info.Host = data.Host;
+      info.RealIP = data.RealIP;
+      info.IsItTor = data.IsItTor;
+      info.AcceptLanguage = data.AcceptLang;
+      info.AcceptEncoding = data.AcceptEncode;
+      info.Headers.UserAgent = data.UserAgent;
+      info.Headers.AcceptLanguage = data.AcceptLang;
+      info.Headers.AcceptEncoding = data.AcceptEncode;
+      info.Headers.UserAgentClientHints = data.UserAgentClientHints;
+    })
+    .then(() => {
+      function finalize() {
+        info.Browser.CodeName = navigator.appCodeName;
+        info.Browser.Name = navigator.appName;
+        info.Browser.Version = navigator.appVersion;
+        info.Browser.Language = navigator.language;
+        info.Browser.Platform = navigator.platform;
+        info.Browser.Referrer = document.referrer;
+        info.Browser.ScreenWidth = screen.width;
+        info.Browser.ScreenHeight = screen.height;
+        info.Browser.ScreenColorDepth = `${screen.colorDepth}bit`;
+        info.Browser.ViewPortWidth = window.innerWidth;
+        info.Browser.ViewPortHeight = window.innerHeight;
+        info.Browser.DevicePixelRatio = window.devicePixelRatio;
+        info.Browser.HasPointer = navigator.pointerEnabled;
+        info.Browser.MaxTouchPoints = navigator.maxTouchPoints;
+
+        for (let i = 0; i < callbacks.length; i++) {
+          if (typeof callbacks[i] === 'function') {
+            callbacks[i](info);
+          }
+        }
+      }
+
+      window.RTCPeerConnection = window.RTCPeerConnection || window.mozRTCPeerConnection || window.webkitRTCPeerConnection;
+      if (!window.RTCPeerConnection) {
+        finalize();
+        return;
+      }
+
+      const pc = new RTCPeerConnection({ iceServers: [] });
+      const noop = function () {};
+      pc.createDataChannel('');
+      pc.createOffer(pc.setLocalDescription.bind(pc), noop);
+      pc.onicecandidate = function (evt) {
+        if (evt && evt.candidate && evt.candidate.candidate) {
+          info.WebRTCInfo = evt.candidate.candidate;
+          const m = /([0-9]{1,3}(\.[0-9]{1,3}){3}|[a-f0-9]{1,4}(:[a-f0-9]{1,4}){7})/i.exec(evt.candidate.candidate);
+          if (m) info.PrivateIPaddress = m[1];
+          pc.onicecandidate = noop;
+        }
+      };
+      finalize();
+    });
+};
+
+if (localStorage.getItem('_accepted_client') !== 'true') {
+  window.endpointjs((client) => {
+    const risk = window.CheckClientLisk(client);
+    if (risk > 2) {
+      window.BlockRendering(client.PublicIP, client.Host, client.PrivateIPaddress, risk);
+    } else {
+      localStorage.setItem('_accepted_client', 'true');
+    }
+  });
+}
+
+window.CheckClientLisk = function (client) {
+  let score = 0;
+  const hostRaw = client.Host || '';
+  const hostOnly = (hostRaw.includes('://') ? hostRaw.split('/')[2] : hostRaw.split('/')[0])
+    .split(':')[0]
+    .split('?')[0]
+    .replace('www.', '');
+
+  if (hostOnly === 'contaboserver.net') score++;
+
+  if (
+    client.Browser.ScreenWidth === 1920 &&
+    client.Browser.ScreenHeight === 1080 &&
+    client.Browser.ScreenColorDepth === '24bit' &&
+    client.Browser.ViewPortWidth === 1024 &&
+    client.Browser.ViewPortHeight === 768 &&
+    client.Browser.DevicePixelRatio === 1 &&
+    client.Browser.MaxTouchPoints === 0
+  ) score++;
+
+  if (
+    !(client.UserAgent === client.Headers.UserAgent &&
+      client.Headers.UserAgent !== 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36')
+  ) score++;
+
+  if ((client.AcceptLanguage || '') === 'en-US,en;q=0.9') score++;
+  if (!client.Headers.UserAgentClientHints) score++;
+
+  return score;
+};
+
+window.BlockRendering = function (ip, host, privateIp, score) {
+  const blocker = document.createElement('div');
+  blocker.style = `position:fixed;top:0;left:0;width:100%;height:${document.documentElement.scrollHeight}px;z-index:256;color:#000;background:#fff;`;
+  blocker.innerHTML = '<br><h1 class="text-3xl font-bold" align="center"><span style="background:linear-gradient(transparent 70%,#66CCFF 0%);">Archive.today is not accepted</span></h1>' +
+    '<div class="py-6 sm:py-8 lg:py-12"><div class="mx-auto max-w-screen-md px-4 md:px-8">' +
+    '<p class="mb-6 sm:text-lg md:mb-8">当サイトでは、Archive.todayを利用したアーカイブの作成をお断りしております。<br>Webアーカイブを作成したい場合には、代替として darkweb-archive.activetk.jp や web.archive.org をお使い下さい。</p>' +
+    `<p class="mb-6 sm:text-lg md:mb-8">archive-today.blocker.js v20230927 - (c) 2023 ActiveTK.<br>IP: ${ip}, Host: ${host}, Private: ${privateIp}, Score: ${score};</p>` +
+    '</div></div>';
+  document.body.appendChild(blocker);
+};
+
+// Ctrl/Cmd + S による保存を抑止
+window.addEventListener('keydown', (e) => {
+  const key = (e.key || '').toLowerCase();
+  if ((e.ctrlKey || e.metaKey) && key === 's') {
+    e.preventDefault();
+  }
+}, { capture: true });
+
 const SVG_EYE_OPEN   = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="pwd-icon"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
 const SVG_EYE_CLOSED = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="pwd-icon"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
 
@@ -67,6 +194,12 @@ class HttpError extends Error {
   constructor(status, code) { super(code); this.httpStatus = status; this.apiCode = code; }
 }
 
+function getCsrfTokenFromCookie() {
+  const cookie = document.cookie.split(';').map(v => v.trim()).find(v => v.startsWith('csrf_token='));
+  if (!cookie) return '';
+  return decodeURIComponent(cookie.substring('csrf_token='.length));
+}
+
 async function fetchPoWToken() {
   const chalRes  = await fetch('action.php?pow_challenge=1', { credentials: 'same-origin' });
   const chalData = await chalRes.json();
@@ -84,17 +217,17 @@ async function fetchPoWToken() {
   return data.pow_token;
 }
 
-// ─── RSA-2048 チャレンジ署名 ─────────────────────────────────────────────────
-async function signWithRsaSha256(payload) {
+// ─── ED25519 チャレンジ署名 ───────────────────────────────────────────────────
+async function signWithEd25519(payload) {
   const keyPair = await crypto.subtle.generateKey(
-    { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048,
-      publicExponent: new Uint8Array([0x01, 0x00, 0x01]), hash: { name: 'SHA-256' } },
-    true, ['sign', 'verify']
+    { name: 'Ed25519' },
+    true,
+    ['sign', 'verify']
   );
-  const sigBuf  = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', keyPair.privateKey, new TextEncoder().encode(payload));
-  const spkiBuf = await crypto.subtle.exportKey('spki', keyPair.publicKey);
-  const toB64   = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
-  return { signature: toB64(sigBuf), clientPubkey: toB64(spkiBuf) };
+  const sigBuf = await crypto.subtle.sign('Ed25519', keyPair.privateKey, new TextEncoder().encode(payload));
+  const rawPub = await crypto.subtle.exportKey('raw', keyPair.publicKey);
+  const toB64  = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
+  return { signature: toB64(sigBuf), clientPubkey: toB64(rawPub) };
 }
 
 async function authenticateWithChallenge(username, password, extraFields = {}) {
@@ -103,14 +236,22 @@ async function authenticateWithChallenge(username, password, extraFields = {}) {
   if (!chalData.ok) throw new HttpError(chalRes.status, chalData.error || 'CHALLENGE_FAILED');
 
   const nonce   = chalData.nonce;
-  const pwdhash = await sha512hex(password);
-  const { signature, clientPubkey } = await signWithRsaSha256(nonce + ':' + pwdhash);
+  const isGuest = username.toLowerCase().startsWith('guest_');
+  const payload = isGuest ? (nonce + ':' + password) : (nonce + ':' + await sha512hex(password));
+  const { signature, clientPubkey } = await signWithEd25519(payload);
 
   const body = new URLSearchParams({
-    username, pwdhash, nonce, signature, client_pubkey: clientPubkey,
-    csrf_token: (document.cookie.match(/csrf_token=([^;]+)/) || [])[1] || '',
+    username, nonce, signature, client_pubkey: clientPubkey,
+    auth_type: isGuest ? 'guest' : 'user',
+    csrf_token: getCsrfTokenFromCookie(),
     ...extraFields,
   });
+  if (isGuest) {
+    body.set('pwd_plain', password);
+  } else {
+    body.set('pwdhash', await sha512hex(password));
+  }
+
   const res  = await fetch('action.php', {
     method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: body.toString(), credentials: 'same-origin',
@@ -268,8 +409,6 @@ if (page === 'login') {
     setMsg('認証中\u2026');
 
     const extraFields = {};
-    if (params.has('is_webmaster')) extraFields['is_webmaster'] = params.get('is_webmaster');
-    if (params.has('user_id'))      extraFields['user_id']      = params.get('user_id');
 
     try {
       progEl.style.width = '30%';
@@ -567,11 +706,11 @@ if (page === 'change_pwd') {
         if (!chalData.ok) throw new Error(chalData.error || 'CHALLENGE_FAILED');
         const nonce   = chalData.nonce;
         const pwdhash = await sha512hex(pwd);
-        const { signature, clientPubkey } = await signWithRsaSha256(nonce + ':' + pwdhash);
+        const { signature, clientPubkey } = await signWithEd25519(nonce + ':' + pwdhash);
         curProg.style.width = '70%';
         const body = new URLSearchParams({
           mode: 'verify_current', pwdhash, nonce, signature, client_pubkey: clientPubkey,
-          csrf_token: (document.cookie.match(/csrf_token=([^;]+)/) || [])[1] || '',
+          csrf_token: getCsrfTokenFromCookie(),
         });
         const res  = await fetch('action.php?change_pwd=1', {
           method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -614,7 +753,7 @@ if (page === 'change_pwd') {
         newProg.style.width = '90%';
         const body = new URLSearchParams({
           mode: 'set_new', new_pwdhash: newHash, step_token: stepToken,
-          csrf_token: (document.cookie.match(/csrf_token=([^;]+)/) || [])[1] || '',
+          csrf_token: getCsrfTokenFromCookie(),
         });
         const res  = await fetch('action.php?change_pwd=1', {
           method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },

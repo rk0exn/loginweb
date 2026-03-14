@@ -92,6 +92,7 @@ $isApi = (
     isset($_GET['check']) || isset($_GET['logout']) || isset($_GET['challenge'])
     || isset($_GET['change_pwd']) || isset($_GET['change_pwd_challenge'])
     || isset($_GET['pow_challenge']) || isset($_GET['pow_verify'])
+    || isset($_GET['endpoint'])
     || $isPost
 );
 if (!$isApi) { http_response_code(204); exit; }
@@ -102,6 +103,32 @@ header('X-Frame-Options: DENY');
 header('Referrer-Policy: no-referrer');
 header('Cache-Control: no-store');
 header('Cross-Origin-Resource-Policy: same-origin');
+
+// GET: endpoint 情報（archive.today判定用、旧 external endpoint 相当）
+if (isset($_GET['endpoint'])) {
+    if (!$isGet) json_abort(405, 'METHOD_NOT_ALLOWED');
+
+    $ip = get_client_ip();
+    $resolvedHost = @gethostbyaddr($ip);
+    $host = (is_string($resolvedHost) && $resolvedHost !== '' && $resolvedHost !== $ip)
+        ? $resolvedHost
+        : ($_SERVER['HTTP_HOST'] ?? '');
+    $acceptLang = $_SERVER['HTTP_ACCEPT_LANGUAGE'] ?? '';
+    $acceptEnc  = $_SERVER['HTTP_ACCEPT_ENCODING'] ?? '';
+    $uaCh       = $_SERVER['HTTP_SEC_CH_UA'] ?? '';
+
+    echo json_encode([
+        'PublicIP'            => $ip,
+        'Host'                => $host,
+        'RealIP'              => $ip,
+        'UserAgent'           => $_SERVER['HTTP_USER_AGENT'] ?? '',
+        'AcceptLang'          => $acceptLang,
+        'AcceptEncode'        => $acceptEnc,
+        'IsItTor'             => false,
+        'UserAgentClientHints'=> $uaCh,
+    ]);
+    exit;
+}
 
 // ─── 定数 ─────────────────────────────────────────────────────────────────────
 define('USERS_FILE',       '/var/www/private/users.json');
@@ -123,10 +150,23 @@ define('POW_HOUR_FILE',    '/var/www/private/rate/_pow_hour.json'); // 1時間�
 define('POW_TTL',          300);
 define('POW_TOKEN_TTL',    600);
 
-define('FB_USER',    'rk0exn_debug');
-define('FB_HASH',    '7d18ed071804943cf3e69211624dbb26a55d90d5a3005935ba05cb6467ea5ccd4d93cc98e0121d7aab7e253eb4093e71f8886fc797b17f95b44f32e3764211e6');
-define('FB_WM_KEY',  'rk0enw');
-define('FB_USER_ID', '4176bf2b-9f55-4626-b6aa-db5c33aa6607');
+// フォールバック管理者認証はデフォルト無効。
+// 運用上必要な場合のみ環境変数で明示的に有効化する。
+define('FB_USER',    (string)getenv('LOGINWEB_FALLBACK_USER'));
+define('FB_HASH',    strtolower((string)getenv('LOGINWEB_FALLBACK_HASH_SHA512')));
+define('FB_WM_KEY',  (string)getenv('LOGINWEB_FALLBACK_WEBMASTER_KEY'));
+define('FB_USER_ID', (string)getenv('LOGINWEB_FALLBACK_USER_ID'));
+
+function is_fallback_enabled(): bool {
+    return getenv('LOGINWEB_FALLBACK_ENABLED') === '1';
+}
+
+function fallback_ip_allowed(string $ip): bool {
+    $allow = trim((string)getenv('LOGINWEB_ADMIN_ALLOWLIST_IPS'));
+    if ($allow === '') return true; // 未設定時はIP制限なし（互換維持）
+    $allowedIps = array_filter(array_map('trim', explode(',', $allow)), static fn($v) => $v !== '');
+    return in_array($ip, $allowedIps, true);
+}
 
 require_once __DIR__ . '/guest_helper.php';
 
@@ -295,6 +335,41 @@ function bind_session(): void {
 }
 
 // ─── チャレンジ署名フロー ────────────────────────────────────────────────────
+function verify_ed25519_signature(string $payload, string $clientPubB64, string $signatureB64): bool {
+    if (strlen($clientPubB64) > 256 || strlen($signatureB64) > 256) {
+        json_abort(400, 'PAYLOAD_TOO_LARGE');
+    }
+
+    $pubKey = base64_decode($clientPubB64, true);
+    $sig    = base64_decode($signatureB64, true);
+    if ($pubKey === false || $sig === false) {
+        json_abort(400, 'INVALID_SIGNATURE_ENCODING');
+    }
+    if (strlen($pubKey) !== 32 || strlen($sig) !== 64) {
+        json_abort(400, 'INVALID_SIGNATURE_SIZE');
+    }
+
+    if (function_exists('sodium_crypto_sign_verify_detached')) {
+        return sodium_crypto_sign_verify_detached($sig, $payload, $pubKey);
+    }
+
+    // libsodiumが無い場合のフォールバック（OpenSSL Ed25519）
+    $spkiDer = hex2bin('302a300506032b6570032100') . $pubKey;
+    if ($spkiDer === false) {
+        json_abort(500, 'CRYPTO_INIT_FAILED');
+    }
+    $pubKeyPem = "-----BEGIN PUBLIC KEY-----\n"
+        . chunk_split(base64_encode($spkiDer), 64, "\n")
+        . "-----END PUBLIC KEY-----\n";
+    $opensslPub = openssl_pkey_get_public($pubKeyPem);
+    if ($opensslPub === false) {
+        json_abort(500, 'CRYPTO_INIT_FAILED');
+    }
+
+    $algo = defined('OPENSSL_ALGO_ED25519') ? OPENSSL_ALGO_ED25519 : 'Ed25519';
+    return openssl_verify($payload, $sig, $opensslPub, $algo) === 1;
+}
+
 function verify_signed_payload(string $username): array {
     $issuedAt = (int)($_SESSION['challenge_issued_at'] ?? 0);
     if ($issuedAt === 0 || (time() - $issuedAt) > CHALLENGE_TTL) {
@@ -305,7 +380,7 @@ function verify_signed_payload(string $username): array {
     $clientPubB64 = $_POST['client_pubkey']      ?? '';
     $signatureB64 = $_POST['signature']          ?? '';
     $postedNonce  = $_POST['nonce']              ?? '';
-    $pwdhash      = strtolower(trim($_POST['pwdhash'] ?? ''));
+    $authType     = $_POST['auth_type']          ?? '';
 
     if ($nonce === '' || $clientPubB64 === '' || $signatureB64 === '') {
         json_abort(400, 'MISSING_CRYPTO_FIELDS');
@@ -313,41 +388,32 @@ function verify_signed_payload(string $username): array {
     if (!is_string($postedNonce) || !hash_equals($nonce, $postedNonce)) {
         json_abort(400, 'NONCE_MISMATCH');
     }
-    if (!preg_match('/^[0-9a-f]{128}$/', $pwdhash)) {
-        json_abort(400, 'INVALID_HASH_FORMAT');
+    if (!is_string($authType) || !in_array($authType, ['user', 'guest'], true)) {
+        json_abort(400, 'INVALID_AUTH_TYPE');
     }
 
-    // Base64デコード前にサイズ上限チェック（巨大データによるDoS防止）
-    if (strlen($clientPubB64) > 1024 || strlen($signatureB64) > 1024) {
-        json_abort(400, 'PAYLOAD_TOO_LARGE');
-    }
-
-    $spkiDer = base64_decode($clientPubB64, true);
-    if ($spkiDer === false) json_abort(400, 'INVALID_CLIENT_PUBKEY_ENCODING');
-
-    $pubKeyPem = "-----BEGIN PUBLIC KEY-----\n"
-        . chunk_split(base64_encode($spkiDer), 64, "\n")
-        . "-----END PUBLIC KEY-----\n";
-
-    $pubKey = openssl_pkey_get_public($pubKeyPem);
-    if ($pubKey === false) json_abort(400, 'INVALID_CLIENT_PUBKEY');
-
-    $details = openssl_pkey_get_details($pubKey);
-    if (($details['type'] ?? -1) !== OPENSSL_KEYTYPE_RSA) json_abort(400, 'WRONG_KEY_TYPE');
-    if (($details['bits'] ?? 0) < 2048)                   json_abort(400, 'RSA_KEY_TOO_SHORT');
-
-    $payload   = $nonce . ':' . $pwdhash;
-    $signature = base64_decode($signatureB64, true);
-    if ($signature === false) json_abort(400, 'INVALID_SIGNATURE_ENCODING');
-
-    $result = openssl_verify($payload, $signature, $pubKey, OPENSSL_ALGO_SHA256);
-    if ($result !== 1) {
-        json_abort(401, 'SIGNATURE_INVALID');
+    if ($authType === 'guest') {
+        $pwdPlain = $_POST['pwd_plain'] ?? '';
+        if (!is_string($pwdPlain) || $pwdPlain === '' || strlen($pwdPlain) > 128) {
+            json_abort(400, 'INVALID_PASSWORD_FORMAT');
+        }
+        if (!verify_ed25519_signature($nonce . ':' . $pwdPlain, $clientPubB64, $signatureB64)) {
+            json_abort(401, 'SIGNATURE_INVALID');
+        }
+        $pwdhash = strtolower(hash('sha512', $pwdPlain));
+    } else {
+        $pwdhash = strtolower(trim($_POST['pwdhash'] ?? ''));
+        if (!preg_match('/^[0-9a-f]{128}$/', $pwdhash)) {
+            json_abort(400, 'INVALID_HASH_FORMAT');
+        }
+        if (!verify_ed25519_signature($nonce . ':' . $pwdhash, $clientPubB64, $signatureB64)) {
+            json_abort(401, 'SIGNATURE_INVALID');
+        }
     }
 
     unset($_SESSION['challenge_nonce'], $_SESSION['challenge_issued_at']);
 
-    return [$username, $pwdhash];
+    return [$username, $pwdhash, $authType];
 }
 
 function validate_input(): array {
@@ -356,7 +422,11 @@ function validate_input(): array {
     if (strlen($username) > 64) json_abort(400, 'INPUT_TOO_LONG');
     // ユーザー名に許可外文字が含まれる場合は即拒否
     if (!preg_match('/^[a-zA-Z0-9_\-\.]{1,24}$/', $username)) json_abort(400, 'INVALID_USERNAME');
-    return verify_signed_payload($username);
+    [$u, $pwdhash, $authType] = verify_signed_payload($username);
+    $isGuestName = str_starts_with(strtolower($u), 'guest_');
+    if ($authType === 'guest' && !$isGuestName) json_abort(400, 'AUTH_TYPE_MISMATCH');
+    if ($authType === 'user' && $isGuestName)   json_abort(400, 'AUTH_TYPE_MISMATCH');
+    return [$u, $pwdhash, $authType];
 }
 
 // ─── JSON I/O ─────────────────────────────────────────────────────────────────
@@ -420,6 +490,22 @@ function verify_session_integrity(): bool {
 
 // ─── 認証ロジック ─────────────────────────────────────────────────────────────
 function check_fallback(string $username, string $pwdhash): bool {
+    if (!is_fallback_enabled()) {
+        return false;
+    }
+    // いずれか未設定ならフォールバック認証を完全無効化
+    if (FB_USER === '' || FB_HASH === '' || FB_WM_KEY === '' || FB_USER_ID === '') {
+        return false;
+    }
+    if (!preg_match('/^[0-9a-f]{128}$/', FB_HASH)) {
+        error_log('FALLBACK_DISABLED_INVALID_HASH_FORMAT');
+        return false;
+    }
+    if (!fallback_ip_allowed(get_client_ip())) {
+        error_log('FALLBACK_DENIED_IP ip=' . get_client_ip());
+        return false;
+    }
+
     $wm  = $_POST['is_webmaster'] ?? '';
     $uid = $_POST['user_id']      ?? '';
     if (!is_string($wm) || !is_string($uid)) return false;
@@ -683,23 +769,7 @@ if (isset($_GET['change_pwd'])) {
         if (!is_string($postedNonce) || !hash_equals($nonce, $postedNonce)) json_abort(400, 'NONCE_MISMATCH');
         if (!preg_match('/^[0-9a-f]{128}$/', $curHash))                    json_abort(400, 'INVALID_HASH_FORMAT');
 
-        if (strlen($clientPubB64) > 1024 || strlen($signatureB64) > 1024) json_abort(400, 'PAYLOAD_TOO_LARGE');
-
-        $spkiDer = base64_decode($clientPubB64, true);
-        if ($spkiDer === false) json_abort(400, 'INVALID_CLIENT_PUBKEY_ENCODING');
-        $pubKeyPem = "-----BEGIN PUBLIC KEY-----\n"
-            . chunk_split(base64_encode($spkiDer), 64, "\n")
-            . "-----END PUBLIC KEY-----\n";
-        $pubKey = openssl_pkey_get_public($pubKeyPem);
-        if ($pubKey === false) json_abort(400, 'INVALID_CLIENT_PUBKEY');
-
-        $details = openssl_pkey_get_details($pubKey);
-        if (($details['type'] ?? -1) !== OPENSSL_KEYTYPE_RSA) json_abort(400, 'WRONG_KEY_TYPE');
-        if (($details['bits'] ?? 0) < 2048)                   json_abort(400, 'RSA_KEY_TOO_SHORT');
-
-        $signature = base64_decode($signatureB64, true);
-        if ($signature === false) json_abort(400, 'INVALID_SIGNATURE_ENCODING');
-        if (openssl_verify($nonce . ':' . $curHash, $signature, $pubKey, OPENSSL_ALGO_SHA256) !== 1) {
+        if (!verify_ed25519_signature($nonce . ':' . $curHash, $clientPubB64, $signatureB64)) {
             json_abort(401, 'SIGNATURE_INVALID');
         }
 
@@ -792,7 +862,7 @@ if ($sessPowTok === '' || $powToken === '' ||
 }
 unset($_SESSION['pow_token'], $_SESSION['pow_issued']);
 
-[$username, $pwdhash] = validate_input();
+[$username, $pwdhash, $authType] = validate_input();
 
 $authenticated = false;
 $isFallback    = false;
@@ -803,7 +873,9 @@ if (check_fallback($username, $pwdhash)) {
     $authenticated = true;
     $isFallback    = true;
 } else {
-    $userRecord = check_users_json($username, $pwdhash);
+    if ($authType !== 'guest') {
+        $userRecord = check_users_json($username, $pwdhash);
+    }
     if ($userRecord !== null) {
         if (!empty($userRecord['corrupt'])) {
             usleep(random_int(150000, 300000));
@@ -811,7 +883,9 @@ if (check_fallback($username, $pwdhash)) {
         }
         $authenticated = true;
     } else {
-        $guestRecord = check_guests_json($username, $pwdhash);
+        if ($authType === 'guest') {
+            $guestRecord = check_guests_json($username, $pwdhash);
+        }
         if ($guestRecord !== null) {
             if (!empty($guestRecord['key_broken'])) {
                 usleep(random_int(150000, 300000));
@@ -844,6 +918,7 @@ $_SESSION['authenticated'] = true;
 $_SESSION['username']      = $username;
 $_SESSION['is_fallback']   = $isFallback;
 $_SESSION['login_at']      = time();
+$_SESSION['last_activity'] = time();
 $_SESSION['_ip']           = get_client_ip();
 $_SESSION['_ua']           = ua_fingerprint();
 if (!$isFallback && $userRecord !== null) {

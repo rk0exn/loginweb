@@ -42,11 +42,17 @@ if (empty($_SESSION['authenticated']) || empty($_SESSION['is_fallback'])) {
     header('Location: ../login.php', true, 302); exit;
 }
 
-// セッション有効期限 (30分)
-if ((time() - (int)($_SESSION['login_at'] ?? 0)) > 1800) {
+$now = time();
+if ((int)($_SESSION['login_at'] ?? 0) <= 0 || ($now - (int)($_SESSION['login_at'] ?? 0)) > 900) {
     session_unset(); session_destroy();
     header('Location: ../login.php', true, 302); exit;
 }
+if ((int)($_SESSION['last_activity'] ?? 0) > 0 && ($now - (int)($_SESSION['last_activity'] ?? 0)) > 300) {
+    session_unset(); session_destroy();
+    header('Location: ../login.php?reason=session_expired', true, 302); exit;
+}
+$_SESSION['last_activity'] = $now;
+session_regenerate_id(true);
 
 // UAフィンガープリントによるセッションハイジャック検出
 function ua_fingerprint_admin(): string {
