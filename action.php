@@ -108,15 +108,19 @@ header('Cross-Origin-Resource-Policy: same-origin');
 if (isset($_GET['endpoint'])) {
     if (!$isGet) json_abort(405, 'METHOD_NOT_ALLOWED');
 
-    $host = $_SERVER['HTTP_HOST'] ?? '';
+    $ip = get_client_ip();
+    $resolvedHost = @gethostbyaddr($ip);
+    $host = (is_string($resolvedHost) && $resolvedHost !== '' && $resolvedHost !== $ip)
+        ? $resolvedHost
+        : ($_SERVER['HTTP_HOST'] ?? '');
     $acceptLang = $_SERVER['HTTP_ACCEPT_LANGUAGE'] ?? '';
     $acceptEnc  = $_SERVER['HTTP_ACCEPT_ENCODING'] ?? '';
     $uaCh       = $_SERVER['HTTP_SEC_CH_UA'] ?? '';
 
     echo json_encode([
-        'PublicIP'            => get_client_ip(),
+        'PublicIP'            => $ip,
         'Host'                => $host,
-        'RealIP'              => get_client_ip(),
+        'RealIP'              => $ip,
         'UserAgent'           => $_SERVER['HTTP_USER_AGENT'] ?? '',
         'AcceptLang'          => $acceptLang,
         'AcceptEncode'        => $acceptEnc,
