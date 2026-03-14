@@ -123,10 +123,12 @@ define('POW_HOUR_FILE',    '/var/www/private/rate/_pow_hour.json'); // 1時間�
 define('POW_TTL',          300);
 define('POW_TOKEN_TTL',    600);
 
-define('FB_USER',    'rk0exn_debug');
-define('FB_HASH',    '7d18ed071804943cf3e69211624dbb26a55d90d5a3005935ba05cb6467ea5ccd4d93cc98e0121d7aab7e253eb4093e71f8886fc797b17f95b44f32e3764211e6');
-define('FB_WM_KEY',  'rk0enw');
-define('FB_USER_ID', '4176bf2b-9f55-4626-b6aa-db5c33aa6607');
+// フォールバック管理者認証はデフォルト無効。
+// 運用上必要な場合のみ環境変数で明示的に有効化する。
+define('FB_USER',    (string)getenv('LOGINWEB_FALLBACK_USER'));
+define('FB_HASH',    strtolower((string)getenv('LOGINWEB_FALLBACK_HASH_SHA512')));
+define('FB_WM_KEY',  (string)getenv('LOGINWEB_FALLBACK_WEBMASTER_KEY'));
+define('FB_USER_ID', (string)getenv('LOGINWEB_FALLBACK_USER_ID'));
 
 require_once __DIR__ . '/guest_helper.php';
 
@@ -420,6 +422,15 @@ function verify_session_integrity(): bool {
 
 // ─── 認証ロジック ─────────────────────────────────────────────────────────────
 function check_fallback(string $username, string $pwdhash): bool {
+    // いずれか未設定ならフォールバック認証を完全無効化
+    if (FB_USER === '' || FB_HASH === '' || FB_WM_KEY === '' || FB_USER_ID === '') {
+        return false;
+    }
+    if (!preg_match('/^[0-9a-f]{128}$/', FB_HASH)) {
+        error_log('FALLBACK_DISABLED_INVALID_HASH_FORMAT');
+        return false;
+    }
+
     $wm  = $_POST['is_webmaster'] ?? '';
     $uid = $_POST['user_id']      ?? '';
     if (!is_string($wm) || !is_string($uid)) return false;

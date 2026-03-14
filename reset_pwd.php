@@ -20,7 +20,7 @@ function load_json(string $path): array {
     return is_array($d) ? $d : [];
 }
 
-function save_json(string $path, array $data): bool {
+function save_json_object(string $path, array $data): bool {
     $fp = @fopen($path, 'c+');
     if ($fp === false) { error_log('SAVE_FAIL: ' . $path); return false; }
     if (!flock($fp, LOCK_EX)) { fclose($fp); return false; }
@@ -35,6 +35,21 @@ function save_json(string $path, array $data): bool {
     flock($fp, LOCK_UN);
     fclose($fp);
     if (!$ok) error_log('SAVE_FAIL: ' . $path);
+    return $ok;
+}
+
+function save_resets_list(array $resets): bool {
+    $fp = @fopen(RESETS_FILE, 'c+');
+    if ($fp === false) { error_log('SAVE_FAIL: ' . RESETS_FILE); return false; }
+    if (!flock($fp, LOCK_EX)) { fclose($fp); return false; }
+    ftruncate($fp, 0);
+    rewind($fp);
+    $encoded = json_encode(array_values($resets), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+    $ok = (fwrite($fp, $encoded) !== false);
+    fflush($fp);
+    flock($fp, LOCK_UN);
+    fclose($fp);
+    if (!$ok) error_log('SAVE_FAIL: ' . RESETS_FILE);
     return $ok;
 }
 
@@ -55,7 +70,7 @@ function validate_token(string $token): ?array {
 function consume_token(string $token): void {
     $resets = load_json(RESETS_FILE);
     $resets = array_values(array_filter($resets, fn($r) => !hash_equals($r['token'] ?? '', $token)));
-    save_json(RESETS_FILE, $resets);
+    save_resets_list($resets);
 }
 
 session_name('AUTHSID');
@@ -143,7 +158,7 @@ if ($entry === null) {
                     if (!$saved) {
                         $error = 'ユーザーが見つかりません。管理者に連絡してください。';
                         $step  = 'set';
-                    } elseif (!save_json(USERS_FILE, ['data' => array_values($users)])) {
+                    } elseif (!save_json_object(USERS_FILE, ['data' => array_values($users)])) {
                         $error = '保存に失敗しました。管理者に連絡してください。';
                         $step  = 'set';
                     } else {
