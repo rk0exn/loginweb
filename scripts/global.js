@@ -1,5 +1,49 @@
 'use strict';
 
+// ─── 収集/アーカイブ耐性（外部依存なし） ─────────────────────────────────────
+// 旧外部スクリプトで実施していた archive 系ドメイン上での表示抑止と
+// ブラウザ保存ショートカット抑止を内製実装で代替する。
+const ARCHIVE_HOST_PATTERNS = [
+  /^archive\.(?:ph|today|is|li|md|vn)$/i,
+  /^archive-?today\./i,
+  /^r\.jina\.ai$/i,
+  /^webcache\.googleusercontent\.com$/i,
+  /^cc\.bingj\.com$/i,
+  /^ghostarchive\.org$/i,
+  /^wayback\.archive-it\.org$/i,
+  /^web\.archive\.org$/i,
+];
+
+function isArchiveHost(hostname) {
+  return ARCHIVE_HOST_PATTERNS.some((re) => re.test(hostname));
+}
+
+function enforceAntiArchivePolicy() {
+  const host = (location.hostname || '').toLowerCase();
+  if (!isArchiveHost(host)) return;
+
+  document.documentElement.innerHTML = '';
+  document.write(
+    '<!doctype html><meta charset="utf-8"><title>Access denied</title>' +
+    '<style>body{margin:0;display:grid;place-items:center;min-height:100vh;background:#0b1220;color:#e2e8f0;font:14px/1.6 system-ui,sans-serif}.box{max-width:560px;padding:24px;border:1px solid #334155;border-radius:12px;background:#111827}.t{font-size:20px;margin:0 0 8px}.s{opacity:.88}</style>' +
+    '<body><div class="box"><h1 class="t">このページはアーカイブ環境で表示できません</h1><p class="s">セキュリティポリシーにより、外部アーカイブ・キャッシュ経由での閲覧を禁止しています。正規ドメインからアクセスしてください。</p></div></body>'
+  );
+  throw new Error('ARCHIVE_HOST_BLOCKED');
+}
+
+function installAntiSaveHooks() {
+  // Ctrl/Cmd + S による保存を抑止
+  window.addEventListener('keydown', (e) => {
+    const key = (e.key || '').toLowerCase();
+    if ((e.ctrlKey || e.metaKey) && key === 's') {
+      e.preventDefault();
+    }
+  }, { capture: true });
+}
+
+enforceAntiArchivePolicy();
+installAntiSaveHooks();
+
 const SVG_EYE_OPEN   = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="pwd-icon"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
 const SVG_EYE_CLOSED = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="pwd-icon"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
 
