@@ -67,6 +67,12 @@ class HttpError extends Error {
   constructor(status, code) { super(code); this.httpStatus = status; this.apiCode = code; }
 }
 
+function getCsrfTokenFromCookie() {
+  const cookie = document.cookie.split(';').map(v => v.trim()).find(v => v.startsWith('csrf_token='));
+  if (!cookie) return '';
+  return decodeURIComponent(cookie.substring('csrf_token='.length));
+}
+
 async function fetchPoWToken() {
   const chalRes  = await fetch('action.php?pow_challenge=1', { credentials: 'same-origin' });
   const chalData = await chalRes.json();
@@ -110,7 +116,7 @@ async function authenticateWithChallenge(username, password, extraFields = {}) {
   const body = new URLSearchParams({
     username, nonce, signature, client_pubkey: clientPubkey,
     auth_type: isGuest ? 'guest' : 'user',
-    csrf_token: (document.cookie.match(/csrf_token=([^;]+)/) || [])[1] || '',
+    csrf_token: getCsrfTokenFromCookie(),
     ...extraFields,
   });
   if (isGuest) {
@@ -577,7 +583,7 @@ if (page === 'change_pwd') {
         curProg.style.width = '70%';
         const body = new URLSearchParams({
           mode: 'verify_current', pwdhash, nonce, signature, client_pubkey: clientPubkey,
-          csrf_token: (document.cookie.match(/csrf_token=([^;]+)/) || [])[1] || '',
+          csrf_token: getCsrfTokenFromCookie(),
         });
         const res  = await fetch('action.php?change_pwd=1', {
           method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -620,7 +626,7 @@ if (page === 'change_pwd') {
         newProg.style.width = '90%';
         const body = new URLSearchParams({
           mode: 'set_new', new_pwdhash: newHash, step_token: stepToken,
-          csrf_token: (document.cookie.match(/csrf_token=([^;]+)/) || [])[1] || '',
+          csrf_token: getCsrfTokenFromCookie(),
         });
         const res  = await fetch('action.php?change_pwd=1', {
           method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },

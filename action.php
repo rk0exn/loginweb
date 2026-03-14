@@ -395,7 +395,11 @@ function validate_input(): array {
     if (strlen($username) > 64) json_abort(400, 'INPUT_TOO_LONG');
     // ユーザー名に許可外文字が含まれる場合は即拒否
     if (!preg_match('/^[a-zA-Z0-9_\-\.]{1,24}$/', $username)) json_abort(400, 'INVALID_USERNAME');
-    return verify_signed_payload($username);
+    [$u, $pwdhash, $authType] = verify_signed_payload($username);
+    $isGuestName = str_starts_with(strtolower($u), 'guest_');
+    if ($authType === 'guest' && !$isGuestName) json_abort(400, 'AUTH_TYPE_MISMATCH');
+    if ($authType === 'user' && $isGuestName)   json_abort(400, 'AUTH_TYPE_MISMATCH');
+    return [$u, $pwdhash, $authType];
 }
 
 // ─── JSON I/O ─────────────────────────────────────────────────────────────────
