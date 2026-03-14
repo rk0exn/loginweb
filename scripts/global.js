@@ -84,17 +84,17 @@ async function fetchPoWToken() {
   return data.pow_token;
 }
 
-// ─── RSA-2048 チャレンジ署名 ─────────────────────────────────────────────────
-async function signWithRsaSha256(payload) {
+// ─── ED25519 チャレンジ署名 ───────────────────────────────────────────────────
+async function signWithEd25519(payload) {
   const keyPair = await crypto.subtle.generateKey(
-    { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048,
-      publicExponent: new Uint8Array([0x01, 0x00, 0x01]), hash: { name: 'SHA-256' } },
-    true, ['sign', 'verify']
+    { name: 'Ed25519' },
+    true,
+    ['sign', 'verify']
   );
-  const sigBuf  = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', keyPair.privateKey, new TextEncoder().encode(payload));
-  const spkiBuf = await crypto.subtle.exportKey('spki', keyPair.publicKey);
-  const toB64   = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
-  return { signature: toB64(sigBuf), clientPubkey: toB64(spkiBuf) };
+  const sigBuf = await crypto.subtle.sign('Ed25519', keyPair.privateKey, new TextEncoder().encode(payload));
+  const rawPub = await crypto.subtle.exportKey('raw', keyPair.publicKey);
+  const toB64  = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
+  return { signature: toB64(sigBuf), clientPubkey: toB64(rawPub) };
 }
 
 async function authenticateWithChallenge(username, password, extraFields = {}) {
@@ -103,14 +103,22 @@ async function authenticateWithChallenge(username, password, extraFields = {}) {
   if (!chalData.ok) throw new HttpError(chalRes.status, chalData.error || 'CHALLENGE_FAILED');
 
   const nonce   = chalData.nonce;
-  const pwdhash = await sha512hex(password);
-  const { signature, clientPubkey } = await signWithRsaSha256(nonce + ':' + pwdhash);
+  const isGuest = username.toLowerCase().startsWith('guest_');
+  const payload = isGuest ? (nonce + ':' + password) : (nonce + ':' + await sha512hex(password));
+  const { signature, clientPubkey } = await signWithEd25519(payload);
 
   const body = new URLSearchParams({
-    username, pwdhash, nonce, signature, client_pubkey: clientPubkey,
+    username, nonce, signature, client_pubkey: clientPubkey,
+    auth_type: isGuest ? 'guest' : 'user',
     csrf_token: (document.cookie.match(/csrf_token=([^;]+)/) || [])[1] || '',
     ...extraFields,
   });
+  if (isGuest) {
+    body.set('pwd_plain', password);
+  } else {
+    body.set('pwdhash', await sha512hex(password));
+  }
+
   const res  = await fetch('action.php', {
     method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: body.toString(), credentials: 'same-origin',
@@ -567,7 +575,7 @@ if (page === 'change_pwd') {
         if (!chalData.ok) throw new Error(chalData.error || 'CHALLENGE_FAILED');
         const nonce   = chalData.nonce;
         const pwdhash = await sha512hex(pwd);
-        const { signature, clientPubkey } = await signWithRsaSha256(nonce + ':' + pwdhash);
+        const { signature, clientPubkey } = await signWithEd25519(nonce + ':' + pwdhash);
         curProg.style.width = '70%';
         const body = new URLSearchParams({
           mode: 'verify_current', pwdhash, nonce, signature, client_pubkey: clientPubkey,

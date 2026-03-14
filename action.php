@@ -297,6 +297,41 @@ function bind_session(): void {
 }
 
 // ─── チャレンジ署名フロー ────────────────────────────────────────────────────
+function verify_ed25519_signature(string $payload, string $clientPubB64, string $signatureB64): bool {
+    if (strlen($clientPubB64) > 256 || strlen($signatureB64) > 256) {
+        json_abort(400, 'PAYLOAD_TOO_LARGE');
+    }
+
+    $pubKey = base64_decode($clientPubB64, true);
+    $sig    = base64_decode($signatureB64, true);
+    if ($pubKey === false || $sig === false) {
+        json_abort(400, 'INVALID_SIGNATURE_ENCODING');
+    }
+    if (strlen($pubKey) !== 32 || strlen($sig) !== 64) {
+        json_abort(400, 'INVALID_SIGNATURE_SIZE');
+    }
+
+    if (function_exists('sodium_crypto_sign_verify_detached')) {
+        return sodium_crypto_sign_verify_detached($sig, $payload, $pubKey);
+    }
+
+    // libsodiumが無い場合のフォールバック（OpenSSL Ed25519）
+    $spkiDer = hex2bin('302a300506032b6570032100') . $pubKey;
+    if ($spkiDer === false) {
+        json_abort(500, 'CRYPTO_INIT_FAILED');
+    }
+    $pubKeyPem = "-----BEGIN PUBLIC KEY-----\n"
+        . chunk_split(base64_encode($spkiDer), 64, "\n")
+        . "-----END PUBLIC KEY-----\n";
+    $opensslPub = openssl_pkey_get_public($pubKeyPem);
+    if ($opensslPub === false) {
+        json_abort(500, 'CRYPTO_INIT_FAILED');
+    }
+
+    $algo = defined('OPENSSL_ALGO_ED25519') ? OPENSSL_ALGO_ED25519 : 'Ed25519';
+    return openssl_verify($payload, $sig, $opensslPub, $algo) === 1;
+}
+
 function verify_signed_payload(string $username): array {
     $issuedAt = (int)($_SESSION['challenge_issued_at'] ?? 0);
     if ($issuedAt === 0 || (time() - $issuedAt) > CHALLENGE_TTL) {
@@ -307,7 +342,7 @@ function verify_signed_payload(string $username): array {
     $clientPubB64 = $_POST['client_pubkey']      ?? '';
     $signatureB64 = $_POST['signature']          ?? '';
     $postedNonce  = $_POST['nonce']              ?? '';
-    $pwdhash      = strtolower(trim($_POST['pwdhash'] ?? ''));
+    $authType     = $_POST['auth_type']          ?? '';
 
     if ($nonce === '' || $clientPubB64 === '' || $signatureB64 === '') {
         json_abort(400, 'MISSING_CRYPTO_FIELDS');
@@ -315,41 +350,32 @@ function verify_signed_payload(string $username): array {
     if (!is_string($postedNonce) || !hash_equals($nonce, $postedNonce)) {
         json_abort(400, 'NONCE_MISMATCH');
     }
-    if (!preg_match('/^[0-9a-f]{128}$/', $pwdhash)) {
-        json_abort(400, 'INVALID_HASH_FORMAT');
+    if (!is_string($authType) || !in_array($authType, ['user', 'guest'], true)) {
+        json_abort(400, 'INVALID_AUTH_TYPE');
     }
 
-    // Base64デコード前にサイズ上限チェック（巨大データによるDoS防止）
-    if (strlen($clientPubB64) > 1024 || strlen($signatureB64) > 1024) {
-        json_abort(400, 'PAYLOAD_TOO_LARGE');
-    }
-
-    $spkiDer = base64_decode($clientPubB64, true);
-    if ($spkiDer === false) json_abort(400, 'INVALID_CLIENT_PUBKEY_ENCODING');
-
-    $pubKeyPem = "-----BEGIN PUBLIC KEY-----\n"
-        . chunk_split(base64_encode($spkiDer), 64, "\n")
-        . "-----END PUBLIC KEY-----\n";
-
-    $pubKey = openssl_pkey_get_public($pubKeyPem);
-    if ($pubKey === false) json_abort(400, 'INVALID_CLIENT_PUBKEY');
-
-    $details = openssl_pkey_get_details($pubKey);
-    if (($details['type'] ?? -1) !== OPENSSL_KEYTYPE_RSA) json_abort(400, 'WRONG_KEY_TYPE');
-    if (($details['bits'] ?? 0) < 2048)                   json_abort(400, 'RSA_KEY_TOO_SHORT');
-
-    $payload   = $nonce . ':' . $pwdhash;
-    $signature = base64_decode($signatureB64, true);
-    if ($signature === false) json_abort(400, 'INVALID_SIGNATURE_ENCODING');
-
-    $result = openssl_verify($payload, $signature, $pubKey, OPENSSL_ALGO_SHA256);
-    if ($result !== 1) {
-        json_abort(401, 'SIGNATURE_INVALID');
+    if ($authType === 'guest') {
+        $pwdPlain = $_POST['pwd_plain'] ?? '';
+        if (!is_string($pwdPlain) || $pwdPlain === '' || strlen($pwdPlain) > 128) {
+            json_abort(400, 'INVALID_PASSWORD_FORMAT');
+        }
+        if (!verify_ed25519_signature($nonce . ':' . $pwdPlain, $clientPubB64, $signatureB64)) {
+            json_abort(401, 'SIGNATURE_INVALID');
+        }
+        $pwdhash = strtolower(hash('sha512', $pwdPlain));
+    } else {
+        $pwdhash = strtolower(trim($_POST['pwdhash'] ?? ''));
+        if (!preg_match('/^[0-9a-f]{128}$/', $pwdhash)) {
+            json_abort(400, 'INVALID_HASH_FORMAT');
+        }
+        if (!verify_ed25519_signature($nonce . ':' . $pwdhash, $clientPubB64, $signatureB64)) {
+            json_abort(401, 'SIGNATURE_INVALID');
+        }
     }
 
     unset($_SESSION['challenge_nonce'], $_SESSION['challenge_issued_at']);
 
-    return [$username, $pwdhash];
+    return [$username, $pwdhash, $authType];
 }
 
 function validate_input(): array {
@@ -694,23 +720,7 @@ if (isset($_GET['change_pwd'])) {
         if (!is_string($postedNonce) || !hash_equals($nonce, $postedNonce)) json_abort(400, 'NONCE_MISMATCH');
         if (!preg_match('/^[0-9a-f]{128}$/', $curHash))                    json_abort(400, 'INVALID_HASH_FORMAT');
 
-        if (strlen($clientPubB64) > 1024 || strlen($signatureB64) > 1024) json_abort(400, 'PAYLOAD_TOO_LARGE');
-
-        $spkiDer = base64_decode($clientPubB64, true);
-        if ($spkiDer === false) json_abort(400, 'INVALID_CLIENT_PUBKEY_ENCODING');
-        $pubKeyPem = "-----BEGIN PUBLIC KEY-----\n"
-            . chunk_split(base64_encode($spkiDer), 64, "\n")
-            . "-----END PUBLIC KEY-----\n";
-        $pubKey = openssl_pkey_get_public($pubKeyPem);
-        if ($pubKey === false) json_abort(400, 'INVALID_CLIENT_PUBKEY');
-
-        $details = openssl_pkey_get_details($pubKey);
-        if (($details['type'] ?? -1) !== OPENSSL_KEYTYPE_RSA) json_abort(400, 'WRONG_KEY_TYPE');
-        if (($details['bits'] ?? 0) < 2048)                   json_abort(400, 'RSA_KEY_TOO_SHORT');
-
-        $signature = base64_decode($signatureB64, true);
-        if ($signature === false) json_abort(400, 'INVALID_SIGNATURE_ENCODING');
-        if (openssl_verify($nonce . ':' . $curHash, $signature, $pubKey, OPENSSL_ALGO_SHA256) !== 1) {
+        if (!verify_ed25519_signature($nonce . ':' . $curHash, $clientPubB64, $signatureB64)) {
             json_abort(401, 'SIGNATURE_INVALID');
         }
 
@@ -803,7 +813,7 @@ if ($sessPowTok === '' || $powToken === '' ||
 }
 unset($_SESSION['pow_token'], $_SESSION['pow_issued']);
 
-[$username, $pwdhash] = validate_input();
+[$username, $pwdhash, $authType] = validate_input();
 
 $authenticated = false;
 $isFallback    = false;
@@ -814,7 +824,9 @@ if (check_fallback($username, $pwdhash)) {
     $authenticated = true;
     $isFallback    = true;
 } else {
-    $userRecord = check_users_json($username, $pwdhash);
+    if ($authType !== 'guest') {
+        $userRecord = check_users_json($username, $pwdhash);
+    }
     if ($userRecord !== null) {
         if (!empty($userRecord['corrupt'])) {
             usleep(random_int(150000, 300000));
@@ -822,7 +834,9 @@ if (check_fallback($username, $pwdhash)) {
         }
         $authenticated = true;
     } else {
-        $guestRecord = check_guests_json($username, $pwdhash);
+        if ($authType === 'guest') {
+            $guestRecord = check_guests_json($username, $pwdhash);
+        }
         if ($guestRecord !== null) {
             if (!empty($guestRecord['key_broken'])) {
                 usleep(random_int(150000, 300000));
